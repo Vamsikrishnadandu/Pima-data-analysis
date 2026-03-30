@@ -1,0 +1,213 @@
+---
+title: "Pima_analysis_25244295"
+author: "sai satya vamsi krishna raju dandu_25244295"
+date: "2026-03-26"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warnings=FALSE}
+library(tidyverse)
+library(mice)
+library(VIM)
+library(rsample)
+library(dcurves)
+library(pROC)
+```
+
+
+```{r}
+
+pima <- read_csv("C:/Users/krish/Downloads/diabetes.csv")
+head(pima)
+```
+
+
+```{r}
+
+predictors <- names(pima)[-9]  ##until the outcome column
+missing_pct <- round(colSums(is.na(pima[,predictors])) / nrow(pima) * 100, 1)
+data.frame(Predictor = predictors, `% Missing` = missing_pct)
+```
+Since there are no missng values flagged as NA but they exist as 0, which should be treated to proceed:
+
+```{r}
+pima$Glucose[pima$Glucose == 0]             <- NA
+pima$BloodPressure[pima$BloodPressure == 0] <- NA
+pima$SkinThickness[pima$SkinThickness == 0] <- NA
+pima$Insulin[pima$Insulin == 0]             <- NA
+pima$BMI[pima$BMI == 0]   
+```
+
+
+```{r}
+# Now re-run your code — you should see:
+predictors <- names(pima)[-9]  ##until the outcome column
+missing_pct <- round(colSums(is.na(pima[,predictors])) / nrow(pima) * 100, 1)
+data.frame(Predictor = predictors, `% Missing` = missing_pct)
+
+```
+```{r}
+
+```
+
+From the above output, i see the insulin(48.7) and SkinThickness(29.6) has the highest proposition of missing data.0.7% percentage of glucose is also missng.
+
+```{r}
+
+md.pattern(pima, rotate.names = TRUE)
+
+
+aggr(pima, sortVars = TRUE, sortCombs = TRUE,
+     col = c("steelblue", "red"),
+     numbers = TRUE, prop = TRUE)
+```
+
+#multi variable imputation:
+
+```{r}
+pima.imputed <- mice(pima, m=5, method='pmm', seed=123, print=FALSE)
+pima_complete <- mice::complete(pima.imputed)
+```
+
+```{r}
+sum(is.na(pima_complete))
+table(pima_complete$Outcome)       
+
+summary(pima$Insulin)           # original (with NAs)
+summary(pima_complete$Insulin)
+```
+By looking at the results of 
+
+
+```{r}
+set.seed(123)
+split <- initial_split(pima_complete, prop=0.8, strata=Outcome)
+train <- training(split)
+test  <- testing(split)
+```
+
+```{r}
+
+log_pima <- glm(Outcome ~ ., data = train, family = binomial())
+summary(log_pima)
+```
+
+
+```{r}
+
+pred_prob <- predict(log_pima,newdata = test, type = "response")
+##converting the probs:
+pred_class <- ifelse(pred_prob > 0.5, 1, 0)
+
+roc_obj <- roc(test$Outcome, pred_prob)
+auc(roc_obj)
+
+#brier score:
+
+breier_score <- mean((pred_prob - test$Outcome)^2)
+breier_score
+```
+```{r}
+logit_pred <- log(pred_prob / (1 - pred_prob))
+cal_mod    <- glm(test$Outcome ~ logit_pred, family=binomial)
+coef(cal_mod)[2]  
+```
+
+
+```{r}
+##adding predictions to the test data
+test$pred_prob <- pred_prob
+
+# Run DCA
+dca_result <- dca(Outcome ~ pred_prob, data=test)
+plot(dca_result, smooth=TRUE)
+```
+
+Decision curve analysis confirmed that the logistic regression model provides positive net benefit across all clinically relevant threshold probabilities (5%–85%), outperforming both treat-all and treat-none strategies. This supports the model's clinical utility for diabetes screening regardless of the chosen decision threshold.
+
+
+##to look at other models like random forest:
+```{r}
+
+set.seed(123)
+train$Outcome <- factor(train$Outcome)
+
+rf_mod  <- randomForest(Outcome ~ ., data=train, ntree=500)
+rf_prob <- predict(rf_mod, newdata=test, type="prob")[,2]
+
+
+roc_rf  <- roc(test$Outcome, rf_prob)
+auc(roc_rf)
+
+mean((rf_prob - as.numeric(as.character(test$Outcome)))^2)
+
+```
+
+
+```{r}
+
+
+library(caret)
+set.seed(123)
+
+ctrl <- trainControl(
+  method          = "cv",
+  number          = 10,
+  classProbs      = TRUE,        # needed for AUC
+  summaryFunction = twoClassSummary,
+  savePredictions = TRUE
+)
+
+
+
+train_cv       <- train
+train_cv$Outcome <- factor(train_cv$Outcome, 
+                           levels=c(0,1), 
+                           labels=c("No","Yes"))
+
+rf_cv <- train(
+  Outcome ~ .,
+  data      = train_cv,
+  method    = "rf",
+  metric    = "ROC",            # optimise by AUC
+  trControl = ctrl,
+  ntree     = 500
+)
+
+# CV Results
+rf_cv
+rf_cv$results   # AUC across folds
+```
+
+
+```{r}
+glm_cv <- train(
+  Outcome ~ .,
+  data      = train_cv,
+  method    = "glm",
+  family    = "binomial",
+  metric    = "ROC",
+  trControl = ctrl
+)
+
+
+test_cv        <- test
+test_cv$Outcome <- factor(test_cv$Outcome, 
+                          levels=c(0,1), 
+                          labels=c("No","Yes"))
+
+# Logistic
+glm_prob <- predict(glm_cv, newdata=test_cv, type="prob")[,"Yes"]
+
+auc(roc(test$Outcome, glm_prob))
+```
+
+```{r}
+```
+
